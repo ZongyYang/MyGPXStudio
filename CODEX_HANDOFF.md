@@ -1,0 +1,31 @@
+# MyGPXStudio Codex Handoff
+
+Last updated: 2026-09-06
+
+## Current status
+
+- Native SwiftUI + MapKit macOS application targeting macOS 14 or later.
+- Supports driving, cycling and walking route planning through AMap Web Service APIs.
+- Supports ordered start, waypoint and destination rows; confirmed waypoints appear as blue map markers.
+- Route alternatives are displayed vertically in a route information card.
+- Departure date accepts `yyyy-MM-dd` keyboard input or graphical calendar selection; time uses 24-hour format.
+- The departure time is frozen when route generation succeeds. GPX timestamps, filenames and date folders use that generated-route time rather than the system clock.
+- GPX export creates or reuses a `yyyy-MM-dd` folder under the chosen parent directory and avoids overwriting duplicate filenames.
+- Native map pan, pinch zoom, rotation and pitch are enabled; the map scale is above the right-side controls.
+- The current test suite contains 11 passing XCTest cases.
+
+## Before editing
+
+Read [MyGPXStudio-开发记录.md](MyGPXStudio-开发记录.md) for the complete feature history and source snapshot. The authoritative source is [Sources/RouteToGPX/RouteToGPXApp.swift](Sources/RouteToGPX/RouteToGPXApp.swift).
+
+Never commit a real AMap API key or security key. Credentials are stored at runtime in the macOS Keychain.
+
+## Verification
+
+```bash
+swift test
+zsh build_macos.sh
+codesign --verify --deep --strict dist/MyGPXStudio.app
+```
+
+The generated `dist/` directory is intentionally ignored by Git. Build a fresh app locally before testing or distributing a release.

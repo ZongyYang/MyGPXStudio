@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode local state
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.dSYM
+*.dSYM.zip
+
+# Generated application and release archives
+dist/
+*.zip
+*.dmg
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+.mcp.json
+Config.xcconfig
+*.xcconfig.local
+Secrets.swift
+
+# Local editor files
+.vscode/
+.idea/
+*.swp
