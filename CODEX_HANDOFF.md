@@ -5,14 +5,17 @@ Last updated: 2026-09-10
 ## Current status
 
 - Native SwiftUI + MapKit macOS application targeting macOS 14 or later.
-- Supports driving, cycling and walking route planning through AMap Web Service APIs.
+- Supports driving, cycling and walking route planning. AMap remains the domestic provider; Apple MapKit search and directions are used as the overseas fallback.
+- Apple MapKit results are tagged as WGS-84 so they are not incorrectly passed through GCJ-02 conversion; a route containing any Apple result uses MapKit for all legs.
 - Supports ordered start, waypoint and destination rows; confirmed waypoints appear as blue map markers.
+- When the Generate Route button is disabled, the planner shows the exact blocking reason below it, including the missing stop number or missing API configuration.
+- If start and destination are the same, a waypoint is required so the app can plan a meaningful loop back to the start; with waypoints, each leg is planned in order.
 - Route alternatives are displayed vertically in a route information card.
 - Departure date accepts `yyyy-MM-dd` keyboard input or graphical calendar selection; time uses 24-hour format.
 - The departure time is frozen when route generation succeeds. GPX timestamps, filenames and date folders use that generated-route time rather than the system clock.
 - GPX export uses the departure time frozen when the route was generated. The save panel defaults to `~/Downloads/GPX Output/yyyy-MM-dd`, creates or reuses that folder, and avoids overwriting duplicate filenames. Choosing another location remains supported.
 - Native map pan, pinch zoom, rotation and pitch are enabled; the map scale is above the right-side controls.
-- The current test suite contains 11 passing XCTest cases.
+- The current test suite contains 13 passing XCTest cases, including overseas-provider eligibility and same-start/end validation.
 
 ## iOS target
 

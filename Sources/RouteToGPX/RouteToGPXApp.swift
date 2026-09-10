@@ -232,7 +232,7 @@ struct ContentView: View {
     private func focusMapOnSelectedPlaces() {
         let places = model.selectedPlaces
         guard !places.isEmpty else { return }
-        let coordinates = places.map { CoordinateTransform.gcj02ToWGS84($0.gcj02) }
+        let coordinates = places.map(\.wgs84Coordinate)
         if coordinates.count == 1, let coordinate = coordinates.first {
             cameraPosition = .region(MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude),
@@ -458,6 +458,13 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!model.canPlan || model.isPlanning)
+
+                if let reason = model.planBlockingReason {
+                    Label(reason, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(secondaryTextColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .frame(maxHeight: .infinity, alignment: .top)
         }
@@ -805,7 +812,7 @@ struct RouteMapView: View {
     }
 
     private func coordinate(for place: Place) -> CLLocationCoordinate2D {
-        let wgs84 = CoordinateTransform.gcj02ToWGS84(place.gcj02)
+        let wgs84 = place.wgs84Coordinate
         return CLLocationCoordinate2D(latitude: wgs84.latitude, longitude: wgs84.longitude)
     }
 }
@@ -1543,11 +1550,8 @@ final class RoutePlannerViewModel: ObservableObject {
         searchTask?.cancel()
         searchingStopID = nil
         guard keyword.count >= 2 else { return }
-        guard !apiKey.isEmpty else {
-            setStatus("请先配置高德 Web 服务 API Key。", error: true)
-            return
-        }
-
+        let key = apiKey
+        let security = securityKey
         searchTask = Task { [weak self] in
             if !selectFirstResult {
                 try? await Task.sleep(nanoseconds: 350_000_000)
@@ -1555,7 +1559,13 @@ final class RoutePlannerViewModel: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             self.searchingStopID = stopID
             do {
-                let places = try await AMapClient.searchPlaces(keyword: keyword, apiKey: self.apiKey, securityKey: self.securityKey)
+                var places: [Place] = []
+                if !key.isEmpty {
+                    places = (try? await AMapClient.searchPlaces(keyword: keyword, apiKey: key, securityKey: security)) ?? []
+                }
+                if places.isEmpty {
+                    places = try await MapKitClient.searchPlaces(keyword: keyword)
+                }
                 guard !Task.isCancelled, let index = self.routeStops.firstIndex(where: { $0.id == stopID }) else { return }
                 self.routeStops[index].suggestions = places
                 self.synchronizeLegacyEndpoints()
@@ -1638,8 +1648,54 @@ final class RoutePlannerViewModel: ObservableObject {
         routeStops.first(where: { !$0.suggestions.isEmpty })
     }
 
+    var startAndEndAreSame: Bool {
+        guard let start = routeStops.first?.place, let end = routeStops.last?.place else { return false }
+        if start.id == end.id { return true }
+        let startCoordinate = start.wgs84Coordinate
+        let endCoordinate = end.wgs84Coordinate
+        return abs(startCoordinate.latitude - endCoordinate.latitude) < 0.00001
+            && abs(startCoordinate.longitude - endCoordinate.longitude) < 0.00001
+    }
+
+    var planBlockingReason: String? {
+        if isPlanning { return "正在生成路线，请稍候。" }
+        guard routeStops.count >= 2 else { return "至少需要起点和终点。" }
+
+        if let start = routeStops.first, start.place == nil {
+            return start.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "请先设置起点。"
+                : "起点尚未从搜索建议中选定地点。"
+        }
+
+        if routeStops.count > 2 {
+            for index in 1..<(routeStops.count - 1) {
+                let stop = routeStops[index]
+                guard stop.place == nil else { continue }
+                let title = "途经点 " + String(index)
+                return stop.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? title + "尚未设置。"
+                    : title + "尚未从搜索建议中选定地点。"
+            }
+        }
+
+        if let end = routeStops.last, end.place == nil {
+            return end.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "请先设置终点。"
+                : "终点尚未从搜索建议中选定地点。"
+        }
+
+        if routeStops.count == 2 && startAndEndAreSame {
+            return "起点和终点相同，无法确定环行路线；请添加至少一个途经点，应用会规划回到起点的路线。"
+        }
+
+        if !apiKey.isEmpty || selectedPlaces.contains(where: { $0.coordinateReference == .wgs84 }) {
+            return nil
+        }
+        return "当前地点来自高德搜索，需要先配置高德 Web 服务 API Key。"
+    }
+
     var canPlan: Bool {
-        !apiKey.isEmpty && routeStops.count >= 2 && routeStops.allSatisfy { $0.place != nil }
+        planBlockingReason == nil
     }
 
     var exportDepartureTime: Date {
@@ -1692,8 +1748,9 @@ final class RoutePlannerViewModel: ObservableObject {
             id: "map-\(latitude)-\(longitude)",
             name: "地图选点",
             address: "纬度 \(latitude)，经度 \(longitude)",
-            gcj02: CoordinateTransform.wgs84ToGCJ02(coordinate),
-            category: "地图选点"
+            gcj02: coordinate,
+            category: "地图选点",
+            coordinateReference: .wgs84
         )
         select(place, for: field)
     }
@@ -1730,41 +1787,46 @@ final class RoutePlannerViewModel: ObservableObject {
     }
 
     func planRoute() {
-        let places = routeStops.compactMap(\.place)
-        guard places.count == routeStops.count, places.count >= 2 else { return }
-        guard !apiKey.isEmpty else {
-            setStatus("请先配置高德 Web 服务 API Key。", error: true)
+        guard !isPlanning else {
+            setStatus("正在生成路线，请稍候。", error: true)
             return
         }
+        if let reason = planBlockingReason {
+            setStatus(reason, error: true)
+            return
+        }
+        let places = routeStops.compactMap(\.place)
         let mode = transportMode
         let key = apiKey
         let keySecurity = securityKey
         let plannedDepartureTime = departureTime
         let waypointCount = max(places.count - 2, 0)
-        isPlanning = true
         invalidateRoute()
-        setStatus("正在请求高德路线…", error: false)
+        let useAppleMaps = places.contains { $0.coordinateReference == .wgs84 }
+        if !useAppleMaps && key.isEmpty {
+            setStatus("请先配置高德 Web 服务 API Key，或选择 Apple 地图搜索到的海外地点。", error: true)
+            return
+        }
+        isPlanning = true
+        setStatus(useAppleMaps ? "正在请求 Apple 地图路线…" : "正在请求高德路线…", error: false)
         Task {
             do {
                 let plans: [RoutePlan]
                 if waypointCount == 0 {
-                    plans = try await AMapClient.planRoutes(
-                        start: places[0],
-                        end: places[1],
-                        mode: mode,
-                        apiKey: key,
-                        securityKey: keySecurity
-                    )
+                    if useAppleMaps {
+                        plans = try await MapKitClient.planRoutes(start: places[0], end: places[1], mode: mode)
+                    } else {
+                        plans = try await AMapClient.planRoutes(start: places[0], end: places[1], mode: mode, apiKey: key, securityKey: keySecurity)
+                    }
                 } else {
                     var legs: [RoutePlan] = []
                     for (start, end) in zip(places, places.dropFirst()) {
-                        let leg = try await AMapClient.planRoute(
-                            start: start,
-                            end: end,
-                            mode: mode,
-                            apiKey: key,
-                            securityKey: keySecurity
-                        )
+                        let leg: RoutePlan
+                        if useAppleMaps {
+                            leg = try await MapKitClient.planRoute(start: start, end: end, mode: mode)
+                        } else {
+                            leg = try await AMapClient.planRoute(start: start, end: end, mode: mode, apiKey: key, securityKey: keySecurity)
+                        }
                         legs.append(leg)
                     }
                     plans = [RoutePlan.merging(legs)]
@@ -1898,13 +1960,29 @@ struct Place: Identifiable, Hashable, Codable {
     let address: String
     let gcj02: Coordinate
     let category: String
+    let coordinateReference: CoordinateReference
 
-    init(id: String, name: String, address: String, gcj02: Coordinate, category: String = "") {
+    init(id: String, name: String, address: String, gcj02: Coordinate, category: String = "", coordinateReference: CoordinateReference = .gcj02) {
         self.id = id
         self.name = name
         self.address = address
         self.gcj02 = gcj02
         self.category = category
+        self.coordinateReference = coordinateReference
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        address = try container.decode(String.self, forKey: .address)
+        gcj02 = try container.decode(Coordinate.self, forKey: .gcj02)
+        category = try container.decode(String.self, forKey: .category)
+        coordinateReference = try container.decodeIfPresent(CoordinateReference.self, forKey: .coordinateReference) ?? .gcj02
+    }
+
+    var wgs84Coordinate: Coordinate {
+        coordinateReference == .wgs84 ? gcj02 : CoordinateTransform.gcj02ToWGS84(gcj02)
     }
 
     var displayName: String {
@@ -1928,6 +2006,11 @@ struct Place: Identifiable, Hashable, Codable {
         if category.contains("学校") || category.contains("教育") { return .purple }
         return .pink
     }
+}
+
+enum CoordinateReference: String, Codable, Hashable {
+    case gcj02
+    case wgs84
 }
 
 struct RoutePlan {
@@ -2093,6 +2176,90 @@ enum AMapError: LocalizedError {
     case message(String)
     var errorDescription: String? {
         switch self { case .message(let message): message }
+    }
+}
+
+enum MapKitClient {
+    static func searchPlaces(keyword: String) async throws -> [Place] {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = keyword
+        request.resultTypes = [.address, .pointOfInterest]
+        let response = try await MKLocalSearch(request: request).start()
+
+        return response.mapItems.compactMap { item in
+            let coordinate = item.placemark.coordinate
+            guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
+            let name = item.name ?? item.placemark.name ?? item.placemark.title ?? "未命名地点"
+            let address = [
+                item.placemark.subThoroughfare,
+                item.placemark.thoroughfare,
+                item.placemark.locality,
+                item.placemark.administrativeArea,
+                item.placemark.country
+            ]
+            .compactMap { $0 }
+            .joined(separator: " ")
+
+            return Place(
+                id: "apple-\(name)-\(coordinate.latitude)-\(coordinate.longitude)",
+                name: name,
+                address: address.isEmpty ? (item.placemark.title ?? "") : address,
+                gcj02: Coordinate(latitude: coordinate.latitude, longitude: coordinate.longitude),
+                category: "Apple 地图",
+                coordinateReference: .wgs84
+            )
+        }
+    }
+
+    static func planRoutes(start: Place, end: Place, mode: TransportMode) async throws -> [RoutePlan] {
+        let request = makeRequest(start: start, end: end, mode: mode)
+        request.requestsAlternateRoutes = true
+        let response = try await MKDirections(request: request).calculate()
+        let plans = response.routes.compactMap { route -> RoutePlan? in
+            let points = (0..<route.polyline.pointCount).map { index in
+                let coordinate = route.polyline.points()[index].coordinate
+                return Coordinate(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            }
+            guard points.count > 1 else { return nil }
+            return RoutePlan(
+                mode: mode,
+                gcj02Points: points,
+                wgs84Points: points,
+                duration: route.expectedTravelTime,
+                distance: route.distance
+            )
+        }
+        guard !plans.isEmpty else { throw AMapError.message("Apple 地图没有返回可用路线。") }
+        return plans
+    }
+
+    static func planRoute(start: Place, end: Place, mode: TransportMode) async throws -> RoutePlan {
+        guard let plan = try await planRoutes(start: start, end: end, mode: mode).first else {
+            throw AMapError.message("Apple 地图没有返回可用路线。")
+        }
+        return plan
+    }
+
+    private static func makeRequest(start: Place, end: Place, mode: TransportMode) -> MKDirections.Request {
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: start.wgs84Coordinate.clLocationCoordinate2D))
+        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: end.wgs84Coordinate.clLocationCoordinate2D))
+        request.transportType = transportType(for: mode)
+        return request
+    }
+
+    private static func transportType(for mode: TransportMode) -> MKDirectionsTransportType {
+        switch mode {
+        case .driving: .automobile
+        case .bicycling: .cycling
+        case .walking: .walking
+        }
+    }
+}
+
+private extension Coordinate {
+    var clLocationCoordinate2D: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 }
 

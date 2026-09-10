@@ -225,6 +225,55 @@ final class RouteToGPXTests: XCTestCase {
         XCTAssertTrue(model.canPlan)
     }
 
+    @MainActor
+    func testSameStartAndEndExplainsThatAWaypointIsNeeded() {
+        let samePlace = Place(
+            id: "same-place",
+            name: "同一地点",
+            address: "同一地点地址",
+            gcj02: Coordinate(latitude: 34.1, longitude: 108.7)
+        )
+        let model = RoutePlannerViewModel()
+        model.apiKey = "test-key"
+        model.select(samePlace, for: .start)
+        model.select(samePlace, for: .end)
+
+        XCTAssertFalse(model.canPlan)
+        XCTAssertEqual(model.planBlockingReason, "起点和终点相同，无法确定环行路线；请添加至少一个途经点，应用会规划回到起点的路线。")
+
+        model.addWaypoint()
+        XCTAssertEqual(model.planBlockingReason, "途经点 1尚未设置。")
+    }
+
+    @MainActor
+    func testAppleMapPlacesCanPlanWithoutAMapKey() {
+        let model = RoutePlannerViewModel()
+        model.apiKey = ""
+        model.select(
+            Place(
+                id: "apple-start",
+                name: "海外起点",
+                address: "海外起点地址",
+                gcj02: Coordinate(latitude: 37.3349, longitude: -122.0090),
+                coordinateReference: .wgs84
+            ),
+            for: .start
+        )
+        model.select(
+            Place(
+                id: "apple-end",
+                name: "海外终点",
+                address: "海外终点地址",
+                gcj02: Coordinate(latitude: 37.3318, longitude: -122.0312),
+                coordinateReference: .wgs84
+            ),
+            for: .end
+        )
+
+        XCTAssertTrue(model.canPlan)
+        XCTAssertNil(model.planBlockingReason)
+    }
+
     func testMergingRouteLegsKeepsOnlyOneSharedConnectionPoint() {
         let first = Coordinate(latitude: 34.1, longitude: 108.7)
         let shared = Coordinate(latitude: 34.2, longitude: 108.8)
