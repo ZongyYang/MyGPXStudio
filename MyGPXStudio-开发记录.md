@@ -1,8 +1,8 @@
 # MyGPXStudio 最新源码与开发记录
 
-> 更新时间：2026-09-06
+> 更新时间：2026-09-10
 >
-> 本文档是当前版本的交接与归档文件，包含功能记录、构建/分发说明，以及主源码、测试和配置的完整快照。项目实际文件仍是后续编辑时的唯一准则。
+> 本文档是当前版本的交接与归档文件，包含 macOS 主源码快照、iOS Target 说明、功能记录和构建/分发说明。项目实际文件仍是后续编辑时的唯一准则。
 >
 > 安全提示：不要在本文档、源码或压缩包中写入真实的高德 API Key、安全密钥或用户地点数据。
 
@@ -16,6 +16,15 @@ MyGPXStudio 是原生 macOS 路线规划与 GPX 导出工具。它使用 SwiftUI
 - 应用标识：`com.zongyue.mygpxstudio`
 - 应用产物：`dist/MyGPXStudio.app`
 - 签名：本机临时 ad-hoc 签名，未使用 Developer ID，也未公证
+
+### iOS Target（2026-09-10）
+
+- 工程：`MyGPXStudio-iOS.xcodeproj`
+- 源码：`iOS/MyGPXStudioiOS/MyGPXStudioiOSApp.swift`、`ContentView.swift`、`RoutePlannerModel.swift`
+- 使用 MapKit 原生地图，支持双指缩放、拖移，以及可上下拖拽的系统底部路线规划抽屉。
+- 支持起点、多个途经点、终点、驾车/骑行/步行、路线建议、GPX 生成与 iOS 系统分享。
+- Bundle Identifier：`com.zongyue.mygpxstudio.ios`
+- 2026-09-10 已完成 Debug 真机构建、签名、安装和启动验证；iOS API Key 仍由用户在 App 设置中输入并保存到本机钥匙串。
 
 ## 2. 已完成的功能记录
 
@@ -33,7 +42,7 @@ MyGPXStudio 是原生 macOS 路线规划与 GPX 导出工具。它使用 SwiftUI
 - 日期支持图形化日历和键盘输入 `yyyy-MM-dd`；当输入成为完整有效日期时立即同步，按回车或离开输入框也会提交。时间使用 24 小时制。
 - 点击“生成路线”时，应用会冻结该次路线的出发日期和时间。
 - 后续即使编辑时间输入框，导出的 GPX 时间戳、文件名和导出文件夹仍使用这次路线生成时冻结的出发时间，不使用系统当前时间。
-- 导出按钮会先让用户选父目录；应用在其中自动创建或复用以出发日期命名的文件夹（如 `2023-07-25`）。同名 GPX 自动添加 `-2`、`-3` 等序号，避免覆盖旧文件。
+- 导出按钮默认打开 `下载/GPX Output/生成路线时的出发日期` 文件夹（如 `下载/GPX Output/2023-07-25`），不存在时自动创建；用户也可以在保存面板中改选其他位置，应用会在所选父目录下创建该出发日期文件夹。同名 GPX 自动添加 `-2`、`-3` 等序号，避免覆盖旧文件。
 
 ### 地图与路线
 
@@ -60,6 +69,8 @@ MyGPXStudio-source/
 ├── Resources/MyGPXStudio.svg                    # 图标源文件
 ├── Package.swift                                 # Swift Package 配置
 ├── build_macos.sh                                # 构建、打包和临时签名
+├── MyGPXStudio-iOS.xcodeproj/                     # iOS Target 工程
+├── iOS/MyGPXStudioiOS/                            # iOS 地图、路线和 GPX 源码
 ├── README.md                                     # 简版使用说明
 ├── MyGPXStudio-开发记录.md                       # 本归档文档
 └── dist/MyGPXStudio.app                          # 当前可运行 App
@@ -421,14 +432,33 @@ struct ContentView: View {
         panel.isExtensionHidden = false
         panel.nameFieldStringValue = model.suggestedFilename
 
+        let defaultFolderURL: URL
+        do {
+            defaultFolderURL = try GPXExportDestination.defaultFolderURL(for: exportDepartureTime)
+            panel.directoryURL = defaultFolderURL
+        } catch {
+            model.setStatus("无法创建默认 GPX 输出文件夹：\(error.localizedDescription)", error: true)
+            return
+        }
+        panel.message = "默认保存到“下载/GPX Output/\(departureFolderName)”；如需更改可在此窗口选择其他位置。"
+
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             do {
-                let destination = try GPXExportDestination.destinationURL(
-                    in: url.deletingLastPathComponent(),
-                    departure: exportDepartureTime,
-                    filename: url.lastPathComponent
-                )
+                let selectedDirectory = url.deletingLastPathComponent().standardizedFileURL
+                let destination: URL
+                if selectedDirectory == defaultFolderURL.standardizedFileURL {
+                    destination = try GPXExportDestination.destinationFileURL(
+                        in: selectedDirectory,
+                        filename: url.lastPathComponent
+                    )
+                } else {
+                    destination = try GPXExportDestination.destinationURL(
+                        in: selectedDirectory,
+                        departure: exportDepartureTime,
+                        filename: url.lastPathComponent
+                    )
+                }
                 export(data, to: destination, folderName: departureFolderName)
             } catch {
                 model.setStatus("无法创建 GPX 输出文件夹：\(error.localizedDescription)", error: true)
@@ -2315,11 +2345,30 @@ enum GPXExportDestination {
         return formatter.string(from: departure)
     }
 
-    /// 在用户选择的父目录中创建或复用出发日期文件夹，并为重复文件名追加序号。
-    static func destinationURL(in parentDirectory: URL, departure: Date, filename: String, fileManager: FileManager = .default) throws -> URL {
+    /// 默认将路线 GPX 保存到“下载/GPX Output/出发日期”文件夹。
+    static func defaultFolderURL(for departure: Date, fileManager: FileManager = .default) throws -> URL {
+        guard let downloadsURL = fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "找不到下载文件夹。"])
+        }
+        let outputURL = downloadsURL.appendingPathComponent("GPX Output", isDirectory: true)
+        return try departureFolderURL(in: outputURL, departure: departure, fileManager: fileManager)
+    }
+
+    static func departureFolderURL(in parentDirectory: URL, departure: Date, fileManager: FileManager = .default) throws -> URL {
         let folderURL = parentDirectory.appendingPathComponent(folderName(for: departure), isDirectory: true)
         try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        return folderURL
+    }
 
+    /// 在用户选择的父目录中创建或复用出发日期文件夹，并为重复文件名追加序号。
+    static func destinationURL(in parentDirectory: URL, departure: Date, filename: String, fileManager: FileManager = .default) throws -> URL {
+        let folderURL = try departureFolderURL(in: parentDirectory, departure: departure, fileManager: fileManager)
+        return try destinationFileURL(in: folderURL, filename: filename, fileManager: fileManager)
+    }
+
+    /// 在已经确定的出发日期文件夹中选择不覆盖已有文件的文件名。
+    static func destinationFileURL(in folderURL: URL, filename: String, fileManager: FileManager = .default) throws -> URL {
+        try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
         let initialURL = folderURL.appendingPathComponent(filename)
         guard fileManager.fileExists(atPath: initialURL.path) else { return initialURL }
 

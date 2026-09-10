@@ -324,14 +324,33 @@ struct ContentView: View {
         panel.isExtensionHidden = false
         panel.nameFieldStringValue = model.suggestedFilename
 
+        let defaultFolderURL: URL
+        do {
+            defaultFolderURL = try GPXExportDestination.defaultFolderURL(for: exportDepartureTime)
+            panel.directoryURL = defaultFolderURL
+        } catch {
+            model.setStatus("无法创建默认 GPX 输出文件夹：\(error.localizedDescription)", error: true)
+            return
+        }
+        panel.message = "默认保存到“下载/GPX Output/\(departureFolderName)”；如需更改可在此窗口选择其他位置。"
+
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             do {
-                let destination = try GPXExportDestination.destinationURL(
-                    in: url.deletingLastPathComponent(),
-                    departure: exportDepartureTime,
-                    filename: url.lastPathComponent
-                )
+                let selectedDirectory = url.deletingLastPathComponent().standardizedFileURL
+                let destination: URL
+                if selectedDirectory == defaultFolderURL.standardizedFileURL {
+                    destination = try GPXExportDestination.destinationFileURL(
+                        in: selectedDirectory,
+                        filename: url.lastPathComponent
+                    )
+                } else {
+                    destination = try GPXExportDestination.destinationURL(
+                        in: selectedDirectory,
+                        departure: exportDepartureTime,
+                        filename: url.lastPathComponent
+                    )
+                }
                 export(data, to: destination, folderName: departureFolderName)
             } catch {
                 model.setStatus("无法创建 GPX 输出文件夹：\(error.localizedDescription)", error: true)
@@ -2218,11 +2237,30 @@ enum GPXExportDestination {
         return formatter.string(from: departure)
     }
 
-    /// 在用户选择的父目录中创建或复用出发日期文件夹，并为重复文件名追加序号。
-    static func destinationURL(in parentDirectory: URL, departure: Date, filename: String, fileManager: FileManager = .default) throws -> URL {
+    /// 默认将路线 GPX 保存到“下载/GPX Output/出发日期”文件夹。
+    static func defaultFolderURL(for departure: Date, fileManager: FileManager = .default) throws -> URL {
+        guard let downloadsURL = fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "找不到下载文件夹。"])
+        }
+        let outputURL = downloadsURL.appendingPathComponent("GPX Output", isDirectory: true)
+        return try departureFolderURL(in: outputURL, departure: departure, fileManager: fileManager)
+    }
+
+    static func departureFolderURL(in parentDirectory: URL, departure: Date, fileManager: FileManager = .default) throws -> URL {
         let folderURL = parentDirectory.appendingPathComponent(folderName(for: departure), isDirectory: true)
         try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        return folderURL
+    }
 
+    /// 在用户选择的父目录中创建或复用出发日期文件夹，并为重复文件名追加序号。
+    static func destinationURL(in parentDirectory: URL, departure: Date, filename: String, fileManager: FileManager = .default) throws -> URL {
+        let folderURL = try departureFolderURL(in: parentDirectory, departure: departure, fileManager: fileManager)
+        return try destinationFileURL(in: folderURL, filename: filename, fileManager: fileManager)
+    }
+
+    /// 在已经确定的出发日期文件夹中选择不覆盖已有文件的文件名。
+    static func destinationFileURL(in folderURL: URL, filename: String, fileManager: FileManager = .default) throws -> URL {
+        try fileManager.createDirectory(at: folderURL, withIntermediateDirectories: true)
         let initialURL = folderURL.appendingPathComponent(filename)
         guard fileManager.fileExists(atPath: initialURL.path) else { return initialURL }
 

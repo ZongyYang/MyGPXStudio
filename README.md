@@ -1,4 +1,4 @@
-# MyGPXStudio（macOS）
+# MyGPXStudio（macOS + iOS）
 
 一个精简的 macOS 路线转 GPX 工具：使用高德 Web 服务 API 检索地点、规划驾车/骑行/步行路线，并按指定出发时间导出带时间戳的 WGS-84 GPX 轨迹。
 
@@ -11,6 +11,10 @@
 5. 导出 `.gpx` 文件；也可以从“文件”菜单选择“合并文件夹中的 GPX…”合并已有 GPX 文件。
 
 API Key 仅保存在本机系统钥匙串。导出的路线由高德的 GCJ-02 坐标转换为 GPX 标准的 WGS-84 坐标；每个轨迹点按路径距离分配高德的预计时长。
+
+## iOS 版本
+
+`MyGPXStudio-iOS.xcodeproj` 是独立的 iPhone/iPad Target，提供原生 MapKit 地图、起点/途经点/终点管理、路线生成和 GPX 系统分享。路线规划卡片使用可上下拖动的系统底部抽屉，支持收起、半屏和全屏展开。首次使用时在 App 右上角设置中输入高德 Web 服务 API Key；密钥只保存到本机钥匙串。
 
 ## 构建
 
